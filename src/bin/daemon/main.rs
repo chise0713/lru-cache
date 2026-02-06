@@ -1,0 +1,260 @@
+mod args;
+mod config;
+mod kv;
+
+use std::{
+    collections::HashMap,
+    env, fs,
+    hash::BuildHasherDefault,
+    io::ErrorKind,
+    os::{fd::AsFd as _, unix::fs::MetadataExt as _},
+    path::{Path, PathBuf},
+    process::ExitCode,
+    str::FromStr as _,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use anyhow::{Result, bail};
+use inotify::{Inotify, WatchDescriptor, WatchMask, Watches};
+use lru_cache::{Response, ipc::Daemon};
+use nix::sys::{
+    epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags, EpollTimeout},
+    signal::{SigSet, Signal},
+    signalfd::{SfdFlags, SignalFd},
+};
+use twox_hash::XxHash3_64;
+use walkdir::WalkDir;
+
+use crate::{
+    args::{Args, Parse as _},
+    config::Config,
+    kv::KvMap,
+};
+
+type XxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<XxHash3_64>>;
+
+fn main() -> Result<ExitCode> {
+    let Args { config } = match Args::parse() {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(e);
+        }
+    };
+    let Some(config) = config.as_deref().map(Path::new) else {
+        return args::invalid_argument();
+    };
+
+    let config = Config::from_str(&fs::read_to_string(config)?)?;
+
+    eprintln!("key-value map initializing.."); // init
+    eprintln!("initializing inotify.."); // init
+    let mut inotify = Inotify::init()?;
+    let mut watches = inotify.watches();
+    let mut wd_map = XxHashMap::default();
+    let mut kv = KvMap::new();
+    for dir in &config.directory {
+        let walkdir = WalkDir::new(dir)
+            .follow_root_links(false)
+            .into_iter()
+            .filter_map(Result::ok);
+        for entry in walkdir {
+            let path = entry.path();
+            let meta = entry.metadata()?;
+            if meta.is_dir() {
+                add_watch(&mut wd_map, &mut watches, entry.path());
+            } else {
+                kv.insert(path, meta.atime(), meta.size());
+            }
+        }
+    }
+    eprintln!("inotify initialized");
+    eprintln!("key-value map initialized");
+    eprintln!(); // finish
+
+    eprintln!("starting daemon.."); // start
+    let runtime_dir = if let Some(d) = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+        d
+    } else {
+        PathBuf::from("/run/")
+    };
+    let socket_path = runtime_dir.join("lru-cache.sock");
+    let ln = match Daemon::bind(&socket_path) {
+        Ok(d) => d,
+        Err(e) => bail!("{e}"),
+    };
+    ln.set_unblocking(true)?;
+    drop(socket_path);
+    eprintln!("daemon started");
+    eprintln!(); // finish
+
+    let epfd = Epoll::new(EpollCreateFlags::empty())?;
+
+    const DAEMON_TAG: u64 = 1;
+    epfd.add(ln.as_fd(), EpollEvent::new(EpollFlags::EPOLLIN, DAEMON_TAG))?;
+
+    const SIGNAL_TAG: u64 = 2;
+    let signal_fd = setup_signal();
+    epfd.add(
+        signal_fd.as_fd(),
+        EpollEvent::new(EpollFlags::EPOLLIN, SIGNAL_TAG),
+    )?;
+
+    const INOTIFY_TAG: u64 = 3;
+    epfd.add(
+        inotify.as_fd(),
+        EpollEvent::new(EpollFlags::EPOLLIN, INOTIFY_TAG),
+    )?;
+
+    eprintln!("enter event loop");
+    eprintln!();
+    let mut events =
+        unsafe { Box::new_zeroed_slice([DAEMON_TAG, SIGNAL_TAG, INOTIFY_TAG].len()).assume_init() };
+    'outter: loop {
+        match epfd.wait(&mut events, EpollTimeout::NONE) {
+            Ok(num) => {
+                for ev in &events[..num] {
+                    match ev.data() {
+                        DAEMON_TAG => {
+                            if handle_daemon(&ln, &kv)? {
+                                break 'outter;
+                            }
+                        }
+                        SIGNAL_TAG => {
+                            while let Ok(Some(_)) = signal_fd.read_signal() {}
+                            break 'outter;
+                        }
+                        INOTIFY_TAG => events_watch(&mut inotify, &mut wd_map, &mut kv),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(e.into());
+            }
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+fn handle_daemon(ln: &Daemon, kv: &KvMap) -> Result<bool> {
+    Ok(match ln.accept() {
+        Ok(mut accepted) => {
+            eprintln!("\naccepted client\n");
+            let size = accepted.size()?.amount();
+            eprintln!("client requested size: {size}\n");
+            let evict = kv.plan_evict_until(size);
+            let resp = Response::new(evict);
+            accepted.respon(resp)?;
+            eprintln!("responsed to client\n");
+            false
+        }
+        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => false,
+        Err(e) => {
+            eprintln!("{e}");
+            true
+        }
+    })
+}
+
+fn setup_signal() -> SignalFd {
+    let mut mask = SigSet::empty();
+    mask.add(Signal::SIGINT);
+    mask.add(Signal::SIGTERM);
+    mask.thread_block().unwrap();
+
+    SignalFd::with_flags(&mask, SfdFlags::SFD_NONBLOCK).unwrap()
+}
+
+fn add_watch(
+    wd_map: &mut XxHashMap<WatchDescriptor, Box<Path>>,
+    watches: &mut Watches,
+    path: &Path,
+) {
+    let Ok(wd) = watches.add(
+        path,
+        WatchMask::CREATE
+            | WatchMask::ACCESS
+            | WatchMask::MODIFY
+            | WatchMask::CLOSE_WRITE
+            | WatchMask::MOVED_TO
+            | WatchMask::DELETE
+            | WatchMask::MOVED_FROM,
+    ) else {
+        return;
+    };
+
+    wd_map.insert(wd, Box::from(path));
+}
+
+fn events_watch(
+    inotify: &mut Inotify,
+    wd_map: &mut XxHashMap<WatchDescriptor, Box<Path>>,
+    kv: &mut KvMap,
+) {
+    use inotify::EventMask as E;
+
+    let mut buffer = [0u8; 4096];
+    loop {
+        let events = match inotify.read_events(&mut buffer) {
+            Ok(e) => e,
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+                break;
+            }
+            Err(e) => panic!("failed to read inotify events: {}", e),
+        };
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        for event in events {
+            let is_dir = event.mask.contains(E::ISDIR);
+            let ignored = event.mask.contains(E::IGNORED);
+            let create = event.mask.intersects(E::CREATE | E::MOVED_TO);
+            let modify = event
+                .mask
+                .intersects(E::MODIFY | E::CLOSE_WRITE | E::ACCESS);
+            let delete = event.mask.intersects(E::DELETE | E::MOVED_FROM);
+
+            if ignored {
+                wd_map.remove(&event.wd);
+                continue;
+            }
+
+            let base = match wd_map.get(&event.wd) {
+                Some(b) => b,
+                None => continue,
+            };
+
+            let full = event
+                .name
+                .map(|n| base.join(n).into_boxed_path())
+                .unwrap_or_else(|| base.clone());
+
+            if is_dir && create {
+                add_watch(wd_map, &mut inotify.watches(), &full);
+                continue;
+            }
+
+            if create {
+                eprintln!("\"{}\" created, updating key-value map", full.display());
+            }
+
+            if modify {
+                eprintln!("\"{}\" modified, updating key-value map", full.display());
+            }
+
+            if (create || modify)
+                && let Ok(meta) = full.metadata()
+            {
+                kv.insert(&full, now, meta.size());
+            }
+
+            if delete {
+                eprintln!("\"{}\" removed, updating key-value map", full.display());
+                kv.remove(&full);
+            }
+        }
+    }
+}

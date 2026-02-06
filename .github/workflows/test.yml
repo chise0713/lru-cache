@@ -1,0 +1,42 @@
+name: Unit Tests
+
+on:
+  workflow_call:
+  push:
+    paths:
+      - ".github/workflows/test.yml"
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+
+jobs:
+  test:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [
+            # gnu targets
+            x86_64-unknown-linux-gnu,
+            aarch64-unknown-linux-gnu,
+            i686-unknown-linux-gnu,
+            armv7-unknown-linux-gnueabihf,
+            # musl targets
+            x86_64-unknown-linux-musl,
+            aarch64-unknown-linux-musl,
+            i686-unknown-linux-musl,
+            armv7-unknown-linux-musleabihf,
+          ]
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          fetch-depth: 1
+      - name: Run Tests
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          rust-cache-parameters: '{"prefix-key":"cross"}'
+          command: "test"
+          target: ${{ matrix.target }}
+          args: "--all --locked --all-features --verbose"
