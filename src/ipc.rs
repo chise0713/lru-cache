@@ -1,7 +1,7 @@
 use std::{
     ffi::OsStr,
     fs::{self, Permissions},
-    io::{Read as _, Result, Write as _},
+    io::{Error, ErrorKind, Read as _, Result, Write as _},
     os::{
         fd::{AsFd, BorrowedFd},
         unix::{
@@ -13,7 +13,7 @@ use std::{
     path::Path,
 };
 
-use crate::{Request, Response};
+use crate::{Request, Response, helper::evict_raw_nul_separated};
 
 #[must_use]
 pub struct Daemon {
@@ -36,7 +36,7 @@ impl Daemon {
         Ok(Accepted(self.ln.accept()?.0))
     }
 
-    pub fn set_unblocking(&self, nonblocking: bool) -> Result<()> {
+    pub fn set_nonblocking(&self, nonblocking: bool) -> Result<()> {
         self.ln.set_nonblocking(nonblocking)
     }
 }
@@ -57,25 +57,14 @@ impl AsFd for Daemon {
 pub struct Accepted(UnixStream);
 
 impl Accepted {
-    pub fn size(&mut self) -> Result<Request> {
+    pub fn read_request(&mut self) -> Result<Request> {
         let mut buf = [0u8; 8];
         self.0.read_exact(&mut buf)?;
         Ok(Request::new(u64::from_be_bytes(buf)))
     }
 
-    pub fn respon(mut self, resp: Response) -> Result<()> {
-        let evict = resp.evict();
-        let mut buf = Vec::new();
-        evict.for_each(|e| {
-            buf.extend_from_slice(e.as_os_str().as_bytes());
-            buf.push(b'\0');
-        });
-        if let Some(b) = buf.pop()
-            && b != 0
-        {
-            buf.push(b);
-        };
-        self.0.write_all(&buf)
+    pub fn send_response(mut self, resp: Response) -> Result<()> {
+        self.0.write_all(&evict_raw_nul_separated(&resp))
     }
 }
 
@@ -83,25 +72,35 @@ impl Accepted {
 pub struct Client(UnixStream);
 
 impl Client {
-    pub fn request<P: AsRef<Path>>(path: P, req: Request) -> Result<Self> {
+    pub fn send_request<P: AsRef<Path>>(path: P, req: Request) -> Result<Self> {
         let mut stream = UnixStream::connect(path)?;
         stream.write_all(&req.amount().to_be_bytes())?;
         Ok(Self(stream))
     }
 
-    pub fn evict(self) -> Result<Box<[Box<Path>]>> {
-        let raw_data = self.raw_data()?;
-        let evict = raw_data
-            .split(|b| *b == 0)
-            .map(|s| Box::from(Path::new(OsStr::from_bytes(s))))
-            .collect();
-        Ok(evict)
-    }
-
-    pub fn raw_data(mut self) -> Result<Box<[u8]>> {
+    pub fn read_response(mut self) -> Result<Response> {
         let mut buf = Vec::new();
         self.0.read_to_end(&mut buf)?;
-        Ok(buf.into_boxed_slice())
+
+        if buf.is_empty() {
+            return Response::new([] as [&Path; 0]);
+        }
+
+        let evict: Box<[Box<Path>]> = buf
+            .split(|&b| b == 0)
+            .map(|s| {
+                if s.is_empty() {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        "empty path, leading/trailing NUL",
+                    ));
+                }
+                let path = Path::new(OsStr::from_bytes(s));
+                Ok(Box::from(path))
+            })
+            .collect::<Result<_>>()?;
+
+        Response::new(evict)
     }
 }
 
@@ -128,11 +127,11 @@ mod tests {
 
                 let mut accepted = daemon.accept().unwrap();
 
-                let request = accepted.size().unwrap();
+                let request = accepted.read_request().unwrap();
                 assert_eq!(request.amount(), 42);
 
-                let resp = Response::new([Path::new("foo"), Path::new("bar")]);
-                accepted.respon(resp).unwrap();
+                let resp = Response::new([Path::new("/foo"), Path::new("/bar")]).unwrap();
+                accepted.send_response(resp).unwrap();
             }
         });
 
@@ -143,11 +142,11 @@ mod tests {
         );
 
         let req = Request::new(42);
-        let client = Client::request(sock_path, req).unwrap();
-        let evict = client.evict().unwrap();
+        let client = Client::send_request(sock_path, req).unwrap();
+        let resp = client.read_response().unwrap();
 
-        let evict_ref: Box<[&Path]> = evict.iter().map(AsRef::as_ref).collect();
-        assert_eq!(evict_ref.as_ref(), ["foo", "bar"]);
+        let evict_ref: Box<[&Path]> = resp.evict().map(AsRef::as_ref).collect();
+        assert_eq!(evict_ref.as_ref(), ["/foo", "/bar"]);
 
         daemon_thread.join().unwrap();
     }

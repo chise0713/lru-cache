@@ -31,23 +31,23 @@ impl<'de> Deserialize<'de> for Directory {
             path: Box<Path>,
         }
 
-        let raw = Raw::deserialize(deserializer)?;
-        if !raw.path.is_absolute() {
+        let Raw { path } = Raw::deserialize(deserializer)?;
+        if !path.is_absolute() {
             return Err(de::Error::custom(format!(
                 "path `{}` is not an absolute path",
-                raw.path.display(),
+                path.display(),
             )));
         }
 
-        let meta = fs::metadata(&raw.path).map_err(de::Error::custom)?;
+        let meta = fs::metadata(&path).map_err(de::Error::custom)?;
         if !meta.is_dir() {
             return Err(de::Error::custom(format!(
                 "path `{}` is not a directory",
-                raw.path.display(),
+                path.display(),
             )));
         }
 
-        Ok(Directory { path: raw.path })
+        Ok(Directory { path })
     }
 }
 

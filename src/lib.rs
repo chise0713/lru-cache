@@ -1,6 +1,10 @@
-use std::path::Path;
-
+pub mod helper;
 pub mod ipc;
+
+use std::{
+    io::{self, Error, ErrorKind},
+    path::Path,
+};
 
 #[derive(Debug)]
 pub struct Request {
@@ -24,14 +28,16 @@ pub struct Response {
 }
 
 impl Response {
-    pub fn new<I, P>(evict: I) -> Self
+    pub fn new<I, P>(evict: I) -> Result<Self, io::Error>
     where
         I: IntoIterator<Item = P>,
         P: Into<Box<Path>>,
     {
-        Self {
-            evict: evict.into_iter().map(Into::into).collect(),
+        let evict: Box<[Box<Path>]> = evict.into_iter().map(Into::into).collect();
+        if evict.iter().any(|path| !path.is_absolute()) {
+            return Err(Error::new(ErrorKind::InvalidInput, "path is not absolute"))?;
         }
+        Ok(Self { evict })
     }
 
     pub fn evict(&self) -> impl Iterator<Item = &Path> {

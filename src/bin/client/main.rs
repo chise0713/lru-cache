@@ -3,14 +3,14 @@ mod args;
 use std::{
     env,
     io::{self, Write as _},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
     str::FromStr as _,
 };
 
 use anyhow::Result;
 use byte_unit::Byte;
-use lru_cache::{Request, ipc::Client};
+use lru_cache::{Request, helper::evict_raw_nul_separated, ipc::Client};
 
 use crate::args::{Args, Parse as _};
 
@@ -35,10 +35,11 @@ fn main() -> Result<ExitCode> {
     };
     let socket_path = runtime_dir.join("lru-cache.sock");
 
-    let cl = Client::request(socket_path, Request::new(bytes))?;
+    let cl = Client::send_request(socket_path, Request::new(bytes))?;
 
+    let resp = cl.read_response()?;
     if raw {
-        match io::stdout().write_all(&cl.raw_data()?) {
+        match io::stdout().write_all(&evict_raw_nul_separated(&resp)) {
             Ok(()) => {}
             Err(e)
                 if matches!(
@@ -48,7 +49,8 @@ fn main() -> Result<ExitCode> {
             Err(e) => return Err(e)?,
         };
     } else {
-        println!("{}", serde_json::to_string(&cl.evict()?)?);
+        let s: Box<[&Path]> = resp.evict().collect();
+        println!("{}", serde_json::to_string(&s)?);
     }
 
     Ok(ExitCode::SUCCESS)

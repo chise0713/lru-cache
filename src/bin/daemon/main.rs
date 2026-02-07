@@ -82,7 +82,7 @@ fn main() -> Result<ExitCode> {
         Ok(d) => d,
         Err(e) => bail!("{e}"),
     };
-    ln.set_unblocking(true)?;
+    ln.set_nonblocking(true)?;
     drop(socket_path);
     eprintln!("daemon started");
     eprintln!(); // finish
@@ -141,11 +141,11 @@ fn handle_daemon(ln: &Daemon, kv: &KvMap) -> Result<bool> {
     Ok(match ln.accept() {
         Ok(mut accepted) => {
             eprintln!("\naccepted client\n");
-            let size = accepted.size()?.amount();
+            let size = accepted.read_request()?.amount();
             eprintln!("client requested size: {size}\n");
             let evict = kv.plan_evict_until(size);
-            let resp = Response::new(evict);
-            accepted.respon(resp)?;
+            let resp = Response::new(evict)?;
+            accepted.send_response(resp)?;
             eprintln!("responsed to client\n");
             false
         }

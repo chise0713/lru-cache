@@ -55,20 +55,24 @@ impl KvMap {
 
         let mut entries: Vec<_> = self.map.iter().collect();
 
-        entries.sort_by(|a, b| a.1.cmp(b.1).then(a.0.cmp(b.0)));
+        entries.sort_by(|(pa, a), (pb, b)| a.cmp(b).then(pa.cmp(pb)));
 
-        let mut remaining = self.total_size;
         let cutoff = entries
             .iter()
-            .position(|(_, AtimeSize { atime: _, size })| {
-                remaining = remaining.saturating_sub(*size);
-                remaining <= target_size
+            .scan(self.total_size, |remaining, (_, AtimeSize { size, .. })| {
+                *remaining = remaining.saturating_sub(*size);
+                Some(*remaining)
             })
+            .position(|remaining| remaining <= target_size)
             .map(|i| i + 1)
             .unwrap_or(entries.len());
 
-        let _ = entries.split_off(cutoff);
-        entries.into_iter().map(|(path, _)| path.clone()).collect()
+        entries
+            .into_iter()
+            .take(cutoff)
+            .map(|(path, _)| path)
+            .cloned()
+            .collect()
     }
 }
 
