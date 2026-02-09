@@ -86,19 +86,20 @@ impl Client {
             return Response::new([] as [&Path; 0]);
         }
 
-        let evict: Box<[Box<Path>]> = buf
-            .split(|&b| b == 0)
-            .map(|s| {
-                if s.is_empty() {
-                    return Err(Error::new(
-                        ErrorKind::InvalidData,
-                        "empty path, leading/trailing NUL",
-                    ));
-                }
-                let path = Path::new(OsStr::from_bytes(s));
-                Ok(Box::from(path))
-            })
-            .collect::<Result<_>>()?;
+        const NUL: u8 = 0;
+        if buf.first() == Some(&NUL)
+            || buf.last() == Some(&NUL)
+            || buf.windows(2).any(|w| w == [NUL, NUL])
+        {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "empty path, leading/trailing NUL",
+            ));
+        }
+
+        let evict = buf
+            .split(|&b| b == NUL)
+            .map(|s| Path::new(OsStr::from_bytes(s)));
 
         Response::new(evict)
     }
