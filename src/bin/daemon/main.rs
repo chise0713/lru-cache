@@ -1,6 +1,6 @@
 mod args;
 mod config;
-mod kv;
+mod map;
 
 use std::{
     collections::HashMap,
@@ -28,7 +28,7 @@ use walkdir::WalkDir;
 use crate::{
     args::{Args, Parse as _},
     config::Config,
-    kv::KvMap,
+    map::PathAtimeSizeMap,
 };
 
 type XxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<XxHash3_64>>;
@@ -48,10 +48,14 @@ fn main() -> Result<ExitCode> {
 
     eprintln!("key-value map initializing.."); // init
     eprintln!("initializing inotify.."); // init
+
     let mut inotify = Inotify::init()?;
     let mut watches = inotify.watches();
+
     let mut wd_map = XxHashMap::default();
-    let mut kv = KvMap::new();
+
+    let mut kv = PathAtimeSizeMap::new();
+
     for dir in &config.directory {
         let walkdir = WalkDir::new(dir)
             .follow_root_links(false)
@@ -137,7 +141,7 @@ fn main() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn handle_daemon(ln: &Daemon, kv: &KvMap) -> Result<bool> {
+fn handle_daemon(ln: &Daemon, kv: &PathAtimeSizeMap) -> Result<bool> {
     Ok(match ln.accept() {
         Ok(mut accepted) => {
             eprintln!("\naccepted client\n");
@@ -190,7 +194,7 @@ fn add_watch(
 fn events_watch(
     inotify: &mut Inotify,
     wd_map: &mut XxHashMap<WatchDescriptor, Box<Path>>,
-    kv: &mut KvMap,
+    kv: &mut PathAtimeSizeMap,
 ) {
     use inotify::EventMask as E;
 

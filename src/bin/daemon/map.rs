@@ -1,6 +1,4 @@
-use std::path::Path;
-
-use crate::XxHashMap;
+use std::{collections::BTreeMap, path::Path};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AtimeSize {
@@ -15,15 +13,15 @@ impl AtimeSize {
     }
 }
 
-pub struct KvMap {
-    map: XxHashMap<Box<Path>, AtimeSize>,
+pub struct PathAtimeSizeMap {
+    map: BTreeMap<Box<Path>, AtimeSize>,
     total_size: u64,
 }
 
-impl KvMap {
+impl PathAtimeSizeMap {
     pub fn new() -> Self {
         Self {
-            map: XxHashMap::default(),
+            map: BTreeMap::default(),
             total_size: 0,
         }
     }
@@ -82,7 +80,7 @@ mod tests {
 
     #[test]
     fn test_total_size_tracks_insert_and_remove() {
-        let mut map = KvMap::new();
+        let mut map = PathAtimeSizeMap::new();
 
         map.insert("/a", 1, 10);
         map.insert("/b", 2, 20);
@@ -98,7 +96,7 @@ mod tests {
 
     #[test]
     fn test_insert_same_path_updates_size() {
-        let mut map = KvMap::new();
+        let mut map = PathAtimeSizeMap::new();
 
         map.insert("/a", 1, 10);
         map.insert("/a", 2, 25);
@@ -108,7 +106,7 @@ mod tests {
 
     #[test]
     fn test_no_evict_when_under_target() {
-        let mut map = KvMap::new();
+        let mut map = PathAtimeSizeMap::new();
 
         map.insert("/a", 1, 10);
         map.insert("/b", 2, 20);
@@ -119,7 +117,7 @@ mod tests {
 
     #[test]
     fn evict_oldest_atime_first() {
-        let mut map = KvMap::new();
+        let mut map = PathAtimeSizeMap::new();
 
         map.insert("/old", 1, 10);
         map.insert("/mid", 2, 10);
