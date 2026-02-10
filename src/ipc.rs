@@ -58,7 +58,7 @@ pub struct Accepted(UnixStream);
 
 impl Accepted {
     pub fn read_request(&mut self) -> Result<Request> {
-        let mut buf = [0u8; 8];
+        let mut buf: [u8; _] = 0u64.to_be_bytes();
         self.0.read_exact(&mut buf)?;
         Ok(Request::new(u64::from_be_bytes(buf)))
     }
