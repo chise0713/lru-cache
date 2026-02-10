@@ -76,18 +76,17 @@ fn main() -> Result<ExitCode> {
     eprintln!(); // finish
 
     eprintln!("starting daemon.."); // start
-    let runtime_dir = if let Some(d) = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+    let socket_path = if let Some(d) = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
         d
     } else {
         PathBuf::from("/run/")
-    };
-    let socket_path = runtime_dir.join("lru-cache.sock");
-    let ln = match Daemon::bind(&socket_path) {
+    }
+    .join("lru-cache.sock");
+    let ln = match Daemon::bind(socket_path) {
         Ok(d) => d,
         Err(e) => bail!("{e}"),
     };
     ln.set_nonblocking(true)?;
-    drop(socket_path);
     eprintln!("daemon started");
     eprintln!(); // finish
 

@@ -28,12 +28,12 @@ fn main() -> Result<ExitCode> {
 
     let bytes = Byte::from_str(size.as_ref())?.as_u64();
 
-    let runtime_dir = if let Some(d) = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+    let socket_path = if let Some(d) = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
         d
     } else {
         PathBuf::from("/run/")
-    };
-    let socket_path = runtime_dir.join("lru-cache.sock");
+    }
+    .join("lru-cache.sock");
 
     let cl = Client::send_request(socket_path, Request::new(bytes))?;
 
