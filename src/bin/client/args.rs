@@ -9,6 +9,11 @@ pub struct Args {
     pub size: Option<Box<str>>,
     #[arg(flag = 'r', help = "output raw data, NUL terminated string slice.")]
     pub raw: bool,
+    #[arg(
+        flag = 'd',
+        help = "a directory to calculate evictation, no input equals all."
+    )]
+    pub directory: Option<Box<str>>,
 }
 
 const EXIT_INVALID_ARG: u8 = 2;

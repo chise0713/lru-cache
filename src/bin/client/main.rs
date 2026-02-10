@@ -15,7 +15,11 @@ use lru_cache::{Request, helper::evict_raw_nul_separated, ipc::Client};
 use crate::args::{Args, Parse as _};
 
 fn main() -> Result<ExitCode> {
-    let Args { size, raw } = match Args::parse() {
+    let Args {
+        size,
+        raw,
+        directory,
+    } = match Args::parse() {
         Ok(v) => v,
         Err(e) => {
             return Ok(e);
@@ -26,6 +30,11 @@ fn main() -> Result<ExitCode> {
         return args::invalid_argument();
     };
 
+    let directory = directory
+        .as_ref()
+        .map(|s| Path::new(s.as_ref()))
+        .unwrap_or(Path::new(""));
+
     let bytes = Byte::from_str(size.as_ref())?.as_u64();
 
     let socket_path = if let Some(d) = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
@@ -35,7 +44,7 @@ fn main() -> Result<ExitCode> {
     }
     .join("lru-cache.sock");
 
-    let cl = Client::send_request(socket_path, Request::new(bytes))?;
+    let cl = Client::send_request(socket_path, Request::new(bytes, directory)?)?;
 
     let resp = cl.read_response()?;
     if raw {

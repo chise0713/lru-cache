@@ -3,22 +3,40 @@ pub mod ipc;
 
 use std::{
     io::{self, Error, ErrorKind},
+    os::unix::ffi::OsStrExt as _,
     path::Path,
 };
+
+const NUL: u8 = 0;
 
 #[derive(Debug)]
 pub struct Request {
     amount: u64,
+    directory: Box<Path>,
 }
 
 impl Request {
-    pub fn new(amount: u64) -> Self {
-        Self { amount }
+    pub fn new<P: AsRef<Path>>(amount: u64, directory: P) -> io::Result<Self> {
+        let directory = directory.as_ref();
+
+        if directory.as_os_str().as_bytes().contains(&NUL) {
+            return Err(Error::new(ErrorKind::InvalidData, "path contains NUL"));
+        }
+
+        Ok(Self {
+            amount,
+            directory: Box::from(directory),
+        })
     }
 
     #[inline(always)]
     pub fn amount(&self) -> u64 {
         self.amount
+    }
+
+    #[inline(always)]
+    pub fn directory(&self) -> &Path {
+        &self.directory
     }
 }
 

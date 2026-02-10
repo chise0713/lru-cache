@@ -7,7 +7,10 @@ use std::{
     env, fs,
     hash::BuildHasherDefault,
     io::ErrorKind,
-    os::{fd::AsFd as _, unix::fs::MetadataExt as _},
+    os::{
+        fd::AsFd as _,
+        unix::{ffi::OsStrExt as _, fs::MetadataExt as _},
+    },
     path::{Path, PathBuf},
     process::ExitCode,
     str::FromStr as _,
@@ -54,7 +57,7 @@ fn main() -> Result<ExitCode> {
 
     let mut wd_map = XxHashMap::default();
 
-    let mut kv = PathAtimeSizeMap::new();
+    let mut path_atime_size_map = PathAtimeSizeMap::new();
 
     for dir in &config.directory {
         let walkdir = WalkDir::new(dir)
@@ -65,9 +68,9 @@ fn main() -> Result<ExitCode> {
             let path = entry.path();
             let meta = entry.metadata()?;
             if meta.is_dir() {
-                add_watch(&mut wd_map, &mut watches, entry.path());
+                add_watch(&mut wd_map, &mut watches, path);
             } else {
-                kv.insert(path, meta.atime(), meta.size());
+                path_atime_size_map.insert(path, meta.atime(), meta.size());
             }
         }
     }
@@ -117,16 +120,14 @@ fn main() -> Result<ExitCode> {
             Ok(num) => {
                 for ev in &events[..num] {
                     match ev.data() {
-                        DAEMON_TAG => {
-                            if handle_daemon(&ln, &kv)? {
-                                break 'outter;
-                            }
-                        }
+                        DAEMON_TAG => handle_daemon(&ln, &path_atime_size_map)?,
                         SIGNAL_TAG => {
                             while let Ok(Some(_)) = signal_fd.read_signal() {}
                             break 'outter;
                         }
-                        INOTIFY_TAG => events_watch(&mut inotify, &mut wd_map, &mut kv),
+                        INOTIFY_TAG => {
+                            events_watch(&mut inotify, &mut wd_map, &mut path_atime_size_map)
+                        }
                         _ => unreachable!(),
                     }
                 }
@@ -140,24 +141,28 @@ fn main() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn handle_daemon(ln: &Daemon, kv: &PathAtimeSizeMap) -> Result<bool> {
-    Ok(match ln.accept() {
+fn handle_daemon(ln: &Daemon, kv: &PathAtimeSizeMap) -> Result<()> {
+    match ln.accept() {
         Ok(mut accepted) => {
             eprintln!("\naccepted client\n");
-            let size = accepted.read_request()?.amount();
+            let req = accepted.read_request()?;
+            let size = req.amount();
             eprintln!("client requested size: {size}\n");
-            let evict = kv.plan_evict_until(size);
+            let directory = req.directory();
+            let directory_bytes_buf_is_empty = directory.as_os_str().as_bytes().is_empty();
+            let prefix_filter = (!directory_bytes_buf_is_empty).then_some(directory);
+            let evict = kv.plan_evict_until(size, prefix_filter);
             let resp = Response::new(evict)?;
             accepted.send_response(resp)?;
             eprintln!("responsed to client\n");
-            false
         }
-        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => false,
+        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
         Err(e) => {
-            eprintln!("{e}");
-            true
+            Err(e)?;
         }
-    })
+    }
+
+    Ok(())
 }
 
 fn setup_signal() -> SignalFd {

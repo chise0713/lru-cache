@@ -46,14 +46,29 @@ impl PathAtimeSizeMap {
         dbg!(self.total_size, size);
     }
 
-    pub fn plan_evict_until(&self, target_size: u64) -> impl Iterator<Item = &Path> + '_ {
+    pub fn plan_evict_until(
+        &self,
+        target_size: u64,
+        prefix_filter: Option<&Path>,
+    ) -> impl Iterator<Item = &Path> + '_ {
+        #[expect(clippy::borrowed_box)]
+        fn map_box_as_ref<'a>(tuple: (&'a Box<Path>, &'a AtimeSize)) -> (&'a Path, &'a AtimeSize) {
+            let path = tuple.0;
+            let atime_size = tuple.1;
+            (path.as_ref(), atime_size)
+        }
+
         (self.total_size > target_size)
             .then(|| {
-                let mut entries: Vec<_> = self
-                    .map
-                    .iter()
-                    .map(|(path, atime_size)| (path.as_ref(), atime_size))
-                    .collect();
+                let mut entries: Vec<_> = match prefix_filter {
+                    None => self.map.iter().map(map_box_as_ref).collect(),
+                    Some(prefix) => self
+                        .map
+                        .iter()
+                        .filter(|(path, _)| path.starts_with(prefix))
+                        .map(map_box_as_ref)
+                        .collect(),
+                };
 
                 entries.sort_by(|(path_a, atime_size_a), (path_b, atime_size_b)| {
                     atime_size_a.cmp(atime_size_b).then(path_a.cmp(path_b))
@@ -113,7 +128,7 @@ mod tests {
         map.insert("/a", 1, 10);
         map.insert("/b", 2, 20);
 
-        let evicted: Box<[_]> = map.plan_evict_until(30).collect();
+        let evicted: Box<[_]> = map.plan_evict_until(30, None).collect();
         assert!(evicted.is_empty());
     }
 
@@ -125,7 +140,7 @@ mod tests {
         map.insert("/mid", 2, 10);
         map.insert("/new", 3, 10);
 
-        let evicted: Box<[_]> = map.plan_evict_until(15).collect();
+        let evicted: Box<[_]> = map.plan_evict_until(15, None).collect();
 
         assert_eq!(evicted.as_ref(), &[Path::new("/old"), Path::new("/mid")]);
     }
