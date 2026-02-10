@@ -46,31 +46,33 @@ impl PathAtimeSizeMap {
         dbg!(self.total_size, size);
     }
 
-    pub fn plan_evict_until(&self, target_size: u64) -> Box<[Box<Path>]> {
-        if self.total_size <= target_size {
-            return Box::new([]);
-        }
+    pub fn plan_evict_until(&self, target_size: u64) -> impl Iterator<Item = &Path> + '_ {
+        (self.total_size > target_size)
+            .then(|| {
+                let mut entries: Vec<_> = self
+                    .map
+                    .iter()
+                    .map(|(path, atime_size)| (path.as_ref(), atime_size))
+                    .collect();
 
-        let mut entries: Vec<_> = self.map.iter().collect();
+                entries.sort_by(|(path_a, atime_size_a), (path_b, atime_size_b)| {
+                    atime_size_a.cmp(atime_size_b).then(path_a.cmp(path_b))
+                });
 
-        entries.sort_by(|(pa, a), (pb, b)| a.cmp(b).then(pa.cmp(pb)));
+                let cutoff = entries
+                    .iter()
+                    .scan(self.total_size, |remaining, (_, AtimeSize { size, .. })| {
+                        *remaining = remaining.saturating_sub(*size);
+                        Some(*remaining)
+                    })
+                    .position(|remaining| remaining <= target_size)
+                    .map(|i| i + 1)
+                    .unwrap_or(entries.len());
 
-        let cutoff = entries
-            .iter()
-            .scan(self.total_size, |remaining, (_, AtimeSize { size, .. })| {
-                *remaining = remaining.saturating_sub(*size);
-                Some(*remaining)
+                entries.into_iter().take(cutoff).map(|(path, _)| path)
             })
-            .position(|remaining| remaining <= target_size)
-            .map(|i| i + 1)
-            .unwrap_or(entries.len());
-
-        entries
             .into_iter()
-            .take(cutoff)
-            .map(|(path, _)| path)
-            .cloned()
-            .collect()
+            .flatten()
     }
 }
 
@@ -111,7 +113,7 @@ mod tests {
         map.insert("/a", 1, 10);
         map.insert("/b", 2, 20);
 
-        let evicted = map.plan_evict_until(30);
+        let evicted: Box<[_]> = map.plan_evict_until(30).collect();
         assert!(evicted.is_empty());
     }
 
@@ -123,10 +125,8 @@ mod tests {
         map.insert("/mid", 2, 10);
         map.insert("/new", 3, 10);
 
-        let evicted = map.plan_evict_until(15);
+        let evicted: Box<[_]> = map.plan_evict_until(15).collect();
 
-        let paths: Box<[_]> = evicted.iter().map(AsRef::as_ref).collect();
-
-        assert_eq!(paths.as_ref(), &[Path::new("/old"), Path::new("/mid")]);
+        assert_eq!(evicted.as_ref(), &[Path::new("/old"), Path::new("/mid")]);
     }
 }
