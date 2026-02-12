@@ -8,9 +8,9 @@ use std::{
     str::FromStr as _,
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use byte_unit::Byte;
-use lru_cache::{Request, ipc::Client};
+use lru_cache::{Directory, Request, ipc::Client};
 
 use crate::args::{Args, Parse as _};
 
@@ -18,7 +18,8 @@ fn main() -> Result<ExitCode> {
     let Args {
         size,
         raw,
-        directory,
+        path,
+        tag,
     } = match Args::parse() {
         Ok(v) => v,
         Err(e) => {
@@ -30,10 +31,19 @@ fn main() -> Result<ExitCode> {
         return args::invalid_argument();
     };
 
-    let directory = directory
+    let path = path
         .as_ref()
         .map(|s| Path::new(s.as_ref()))
         .unwrap_or(Path::new(""));
+
+    let tag = tag.unwrap_or_default();
+
+    let directory = match (path.as_os_str().is_empty(), tag.is_empty()) {
+        (true, true) => Directory::Tag(""),
+        (false, true) => Directory::Path(path),
+        (false, false) => bail!("specify only one at once"),
+        (true, false) => Directory::Tag(&tag),
+    };
 
     let bytes = Byte::from_str(size.as_ref())?.as_u64();
 

@@ -6,7 +6,7 @@ use std::{
     collections::HashMap,
     env, fs,
     hash::BuildHasherDefault,
-    io::ErrorKind,
+    io::{Error, ErrorKind},
     os::{
         fd::AsFd as _,
         unix::{ffi::OsStrExt as _, fs::MetadataExt as _},
@@ -19,7 +19,7 @@ use std::{
 
 use anyhow::{Result, bail};
 use inotify::{Inotify, WatchDescriptor, WatchMask, Watches};
-use lru_cache::{Response, ipc::Daemon};
+use lru_cache::{Directory, Response, ipc::Daemon};
 use nix::sys::{
     epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags, EpollTimeout},
     signal::{SigSet, Signal},
@@ -35,6 +35,25 @@ use crate::{
 };
 
 type XxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<XxHash3_64>>;
+
+struct TagTable {
+    entries: Box<[config::Directory]>,
+}
+
+impl TagTable {
+    fn new(mut entries: Box<[config::Directory]>) -> Self {
+        entries.sort_by(|a, b| a.tag.cmp(&b.tag));
+        Self { entries }
+    }
+
+    fn get(&self, tag: &str) -> Option<&Path> {
+        let idx = self
+            .entries
+            .binary_search_by(|e| e.tag.as_ref().cmp(tag))
+            .ok()?;
+        Some(self.entries[idx].as_ref())
+    }
+}
 
 fn main() -> Result<ExitCode> {
     let Args { config } = match Args::parse() {
@@ -57,7 +76,7 @@ fn main() -> Result<ExitCode> {
 
     let mut wd_map = XxHashMap::default();
 
-    let mut path_atime_size_map = PathAtimeSizeMap::new();
+    let mut map = PathAtimeSizeMap::new();
 
     for dir in &config.directory {
         let walkdir = WalkDir::new(dir)
@@ -70,13 +89,17 @@ fn main() -> Result<ExitCode> {
             if meta.is_dir() {
                 add_watch(&mut wd_map, &mut watches, path);
             } else {
-                path_atime_size_map.insert(path, meta.atime(), meta.size());
+                map.insert(path, meta.atime(), meta.size());
             }
         }
     }
     eprintln!("inotify initialized");
     eprintln!("key-value map initialized");
     eprintln!(); // finish
+
+    eprintln!("initializing tag-table.."); //init
+    let tag_table = TagTable::new(config.directory);
+    eprintln!("tag-table initialized"); //init
 
     eprintln!("starting daemon.."); // start
     let socket_path = if let Some(d) = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
@@ -120,14 +143,16 @@ fn main() -> Result<ExitCode> {
             Ok(num) => {
                 for ev in &events[..num] {
                     match ev.data() {
-                        DAEMON_TAG => handle_daemon(&ln, &path_atime_size_map)?,
+                        DAEMON_TAG => {
+                            if let Err(e) = handle_daemon(&ln, &map, &tag_table) {
+                                eprintln!("Error: {e}");
+                            }
+                        }
                         SIGNAL_TAG => {
                             while let Ok(Some(_)) = signal_fd.read_signal() {}
                             break 'outter;
                         }
-                        INOTIFY_TAG => {
-                            events_watch(&mut inotify, &mut wd_map, &mut path_atime_size_map)
-                        }
+                        INOTIFY_TAG => events_watch(&mut inotify, &mut wd_map, &mut map),
                         _ => unreachable!(),
                     }
                 }
@@ -141,7 +166,7 @@ fn main() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn handle_daemon(ln: &Daemon, kv: &PathAtimeSizeMap) -> Result<()> {
+fn handle_daemon(ln: &Daemon, map: &PathAtimeSizeMap, tag_table: &TagTable) -> Result<()> {
     match ln.accept() {
         Ok(mut accepted) => {
             eprintln!("\naccepted client\n");
@@ -149,9 +174,22 @@ fn handle_daemon(ln: &Daemon, kv: &PathAtimeSizeMap) -> Result<()> {
             let size = req.amount();
             eprintln!("client requested size: {size}\n");
             let directory = req.directory();
-            let directory_bytes_buf_is_empty = directory.as_os_str().as_bytes().is_empty();
-            let prefix_filter = (!directory_bytes_buf_is_empty).then_some(directory);
-            let evict = kv.plan_evict_until(size, prefix_filter);
+            let path = match directory {
+                Directory::Tag("") => Path::new(""),
+                Directory::Tag(tag) => {
+                    let Some(path) = tag_table.get(tag) else {
+                        return Err(Error::new(
+                            ErrorKind::NotFound,
+                            format!("tag: \"{tag}\" not found"),
+                        ))?;
+                    };
+                    path
+                }
+                Directory::Path(path) => path,
+            };
+            let path_bytes_is_empty = path.as_os_str().as_bytes().is_empty();
+            let prefix_filter = (!path_bytes_is_empty).then_some(path);
+            let evict = map.plan_evict_until(size, prefix_filter);
             let resp = Response::new(evict)?;
             accepted.send_response(resp)?;
             eprintln!("responsed to client\n");
@@ -198,7 +236,7 @@ fn add_watch(
 fn events_watch(
     inotify: &mut Inotify,
     wd_map: &mut XxHashMap<WatchDescriptor, Box<Path>>,
-    kv: &mut PathAtimeSizeMap,
+    map: &mut PathAtimeSizeMap,
 ) {
     use inotify::EventMask as E;
 
@@ -256,13 +294,39 @@ fn events_watch(
             if (create || modify)
                 && let Ok(meta) = full.metadata()
             {
-                kv.insert(&full, now, meta.size());
+                map.insert(&full, now, meta.size());
             }
 
             if delete {
                 eprintln!("\"{}\" removed, updating key-value map", full.display());
-                kv.remove(&full);
+                map.remove(&full);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tag_table_lookup() {
+        let entries: Box<[config::Directory]> = [
+            config::Directory {
+                path: Box::from(Path::new("/a")),
+                tag: "alpha".into(),
+            },
+            config::Directory {
+                path: Box::from(Path::new("/b")),
+                tag: "beta".into(),
+            },
+        ]
+        .into();
+
+        let table = TagTable::new(entries);
+
+        assert_eq!(table.get("alpha"), Some(Path::new("/a")));
+        assert_eq!(table.get("beta"), Some(Path::new("/b")));
+        assert_eq!(table.get("not-exist"), None);
     }
 }

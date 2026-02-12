@@ -15,7 +15,7 @@ use std::{
 
 use nix::libc::PATH_MAX;
 
-use crate::{NUL, Request, Response};
+use crate::{Directory, NUL, Request, Response};
 
 #[must_use]
 pub struct Daemon {
@@ -56,6 +56,61 @@ impl AsFd for Daemon {
 }
 
 #[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PackedLen(u16);
+
+impl PackedLen {
+    const MAX: usize = PATH_MAX as usize;
+    const FLAG_TAG: u16 = 1 << 15;
+    const LEN_MASK: u16 = !Self::FLAG_TAG;
+
+    pub fn new(len: u16, tag: bool) -> Result<Self> {
+        if len & !Self::LEN_MASK != 0 {
+            return Err(Error::new(ErrorKind::InvalidInput, "length too large"));
+        }
+
+        let mut value = len;
+        if tag {
+            value |= Self::FLAG_TAG;
+        }
+
+        Ok(Self(value))
+    }
+
+    #[expect(clippy::len_without_is_empty)]
+    #[inline(always)]
+    pub fn len(self) -> u16 {
+        self.0 & Self::LEN_MASK
+    }
+
+    #[inline(always)]
+    pub fn tag(self) -> bool {
+        self.0 & Self::FLAG_TAG != 0
+    }
+
+    #[inline(always)]
+    pub fn as_bytes(self) -> [u8; 2] {
+        self.0.to_be_bytes()
+    }
+}
+
+impl TryFrom<u16> for PackedLen {
+    type Error = Error;
+
+    fn try_from(value: u16) -> Result<Self> {
+        let len = value & Self::LEN_MASK;
+        if len as usize > Self::MAX {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "path length exceed `PATH_MAX`",
+            ));
+        }
+
+        Ok(PackedLen(value))
+    }
+}
+
+#[repr(transparent)]
 pub struct Accepted(UnixStream);
 
 impl Accepted {
@@ -67,17 +122,23 @@ impl Accepted {
         let mut path_len_buf: [u8; _] = 0u16.to_be_bytes();
         self.0.read_exact(&mut path_len_buf)?;
         let path_len = u16::from_be_bytes(path_len_buf);
+        let packed_len = PackedLen::try_from(path_len)?;
 
-        if path_len as usize > PATH_MAX as usize {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "path length exceed `PATH_MAX`",
-            ));
-        }
+        let buf = if packed_len.len() != 0 {
+            &mut vec![0; packed_len.len() as usize].into_boxed_slice()
+        } else {
+            [].as_mut()
+        };
+        self.0.read_exact(buf)?;
 
-        let mut buf = vec![0; path_len as usize].into_boxed_slice();
-        self.0.read_exact(&mut buf)?;
-        let directory = Path::new(OsStr::from_bytes(&buf));
+        let directory = if packed_len.tag() {
+            Directory::Tag(
+                str::from_utf8(buf)
+                    .map_err(|_| Error::new(ErrorKind::InvalidData, "tag is not valid UTF-8"))?,
+            )
+        } else {
+            Directory::Path(Path::new(OsStr::from_bytes(buf)))
+        };
 
         Request::new(amount, directory)
     }
@@ -96,17 +157,34 @@ impl Client {
 
         let amount_buf = req.amount().to_be_bytes();
 
-        let path_bytes = req.directory().as_os_str().as_bytes();
-        let path_len: u16 = path_bytes
-            .len()
-            .try_into()
-            .map_err(|_| Error::new(ErrorKind::InvalidInput, "path too long"))?;
-        let path_len_buf = path_len.to_be_bytes();
+        let (packed_len, bytes) = match req.directory() {
+            Directory::Tag(tag) => (
+                PackedLen::new(
+                    tag.len()
+                        .try_into()
+                        .map_err(|e| Error::new(ErrorKind::InvalidInput, e))?,
+                    true,
+                )?,
+                tag.as_bytes(),
+            ),
+            Directory::Path(path) => (
+                PackedLen::new(
+                    path.as_os_str()
+                        .as_bytes()
+                        .len()
+                        .try_into()
+                        .map_err(|e| Error::new(ErrorKind::InvalidInput, e))?,
+                    false,
+                )?,
+                path.as_os_str().as_bytes(),
+            ),
+        };
 
+        let packed_len_buf = packed_len.as_bytes();
         let io_slice = &[
             IoSlice::new(&amount_buf),
-            IoSlice::new(&path_len_buf),
-            IoSlice::new(req.directory().as_os_str().as_bytes()),
+            IoSlice::new(&packed_len_buf),
+            IoSlice::new(bytes),
         ];
 
         _ = stream.write_vectored(io_slice)?;
@@ -167,9 +245,18 @@ mod tests {
 
                 let request = accepted.read_request().unwrap();
                 assert_eq!(request.amount(), 42);
-                assert_eq!(request.directory().as_os_str().as_bytes().len(), 0);
+                assert_eq!(request.directory().path(), Some(Path::new("/foo")));
 
-                let resp = Response::new([Path::new("/foo"), Path::new("/bar")]).unwrap();
+                let resp = Response::new([Path::new("/foo")]).unwrap();
+                accepted.send_response(resp).unwrap();
+
+                let mut accepted = daemon.accept().unwrap();
+
+                let request = accepted.read_request().unwrap();
+                assert_eq!(request.amount(), 7);
+                assert_eq!(request.directory().tag(), Some("bar"));
+
+                let resp = Response::new([Path::new("/bar")]).unwrap();
                 accepted.send_response(resp).unwrap();
             }
         });
@@ -180,18 +267,80 @@ mod tests {
             0o600
         );
 
-        let req = Request::new(42, "").unwrap();
+        let req = Request::new(42, Directory::Path(Path::new("/foo"))).unwrap();
         let client = Client::send_request(sock_path.as_ref(), req).unwrap();
         let resp = client.read_response().unwrap();
 
         let evict_ref: Box<[&Path]> = resp.evict().map(AsRef::as_ref).collect();
-        assert_eq!(evict_ref.as_ref(), ["/foo", "/bar"]);
+        assert_eq!(evict_ref.as_ref(), ["/foo"]);
+
+        let req = Request::new(7, Directory::Tag("bar")).unwrap();
+        let client = Client::send_request(sock_path.as_ref(), req).unwrap();
+        let resp = client.read_response().unwrap();
+
+        let evict_ref: Box<[&Path]> = resp.evict().map(AsRef::as_ref).collect();
+        assert_eq!(evict_ref.as_ref(), ["/bar"]);
 
         daemon_thread.join().unwrap();
     }
 
     #[test]
     fn test_faulty_request() {
-        Request::new(42, "\0").unwrap_err();
+        Request::new(42, Directory::Path(Path::new("\0"))).unwrap_err();
+    }
+
+    #[test]
+    fn test_packed_len_tag_flag_roundtrip() {
+        let p = PackedLen::new(123, true).unwrap();
+        assert_eq!(p.len(), 123);
+        assert!(p.tag());
+
+        let raw = u16::from_be_bytes(p.as_bytes());
+        let decoded = PackedLen::try_from(raw).unwrap();
+
+        assert_eq!(decoded.len(), 123);
+        assert!(decoded.tag());
+    }
+
+    #[test]
+    fn test_packed_len_without_tag() {
+        let p = PackedLen::new(321, false).unwrap();
+        assert_eq!(p.len(), 321);
+        assert!(!p.tag());
+    }
+
+    #[test]
+    fn test_packed_len_rejects_overflow() {
+        let value = 0xFFFF;
+        let result = PackedLen::try_from(value);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_reject_non_utf8_tag() {
+        let bad = b"\xFF\xFF";
+        let packed = PackedLen::new(2, true).unwrap();
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u64.to_be_bytes());
+        buf.extend_from_slice(&packed.as_bytes());
+        buf.extend_from_slice(bad);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let sock_path = temp_dir.path().join("ipc-invalid-tag.sock");
+
+        let daemon = Daemon::bind(&sock_path).unwrap();
+
+        thread::spawn({
+            let sock_path = sock_path.clone();
+            move || {
+                // malfunction mock client
+                let mut stream = UnixStream::connect(sock_path).unwrap();
+                stream.write_all(&buf).unwrap();
+            }
+        });
+
+        let mut accepted = daemon.accept().unwrap();
+        let err = accepted.read_request().unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
     }
 }

@@ -9,24 +9,53 @@ use std::{
 
 const NUL: u8 = 0;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Directory<'a> {
+    Tag(&'a str),
+    Path(&'a Path),
+}
+
+impl<'a> Directory<'a> {
+    pub fn tag(&self) -> Option<&str> {
+        match self {
+            Self::Tag(tag) => Some(tag),
+            Self::Path(_) => None,
+        }
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            Self::Tag(_) => None,
+            Self::Path(path) => Some(path),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum DirectoryInner {
+    Tag(Box<str>),
+    Path(Box<Path>),
+}
+
 #[derive(Debug)]
 pub struct Request {
     amount: u64,
-    directory: Box<Path>,
+    directory: DirectoryInner,
 }
 
 impl Request {
-    pub fn new<P: AsRef<Path>>(amount: u64, directory: P) -> io::Result<Self> {
-        let directory = directory.as_ref();
+    pub fn new(amount: u64, directory: Directory) -> io::Result<Self> {
+        let directory = match directory {
+            Directory::Tag(tag) => DirectoryInner::Tag(Box::from(tag)),
+            Directory::Path(path) => {
+                if path.as_os_str().as_bytes().contains(&NUL) {
+                    return Err(Error::new(ErrorKind::InvalidData, "path contains NUL"));
+                }
+                DirectoryInner::Path(Box::from(path))
+            }
+        };
 
-        if directory.as_os_str().as_bytes().contains(&NUL) {
-            return Err(Error::new(ErrorKind::InvalidData, "path contains NUL"));
-        }
-
-        Ok(Self {
-            amount,
-            directory: Box::from(directory),
-        })
+        Ok(Self { amount, directory })
     }
 
     #[inline(always)]
@@ -35,8 +64,11 @@ impl Request {
     }
 
     #[inline(always)]
-    pub fn directory(&self) -> &Path {
-        &self.directory
+    pub fn directory(&self) -> Directory<'_> {
+        match &self.directory {
+            DirectoryInner::Tag(tag) => Directory::Tag(tag),
+            DirectoryInner::Path(path) => Directory::Path(path),
+        }
     }
 }
 
@@ -95,15 +127,15 @@ mod tests {
 
     #[test]
     fn test_request_ok() {
-        let req = Request::new(42, "/tmp").unwrap();
+        let req = Request::new(42, Directory::Path(Path::new("/tmp"))).unwrap();
 
         assert_eq!(req.amount(), 42);
-        assert_eq!(req.directory(), Path::new("/tmp"));
+        assert_eq!(req.directory(), Directory::Path(Path::new("/tmp")));
     }
 
     #[test]
     fn test_request_rejects_nul() {
-        let err = Request::new(1, Path::new("/tmp\0bad")).unwrap_err();
+        let err = Request::new(1, Directory::Path(Path::new("/tmp\0bad"))).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidData);
     }
 

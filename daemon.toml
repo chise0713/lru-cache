@@ -1,5 +1,7 @@
 [[directory]]
 path = "/home/user/.cargo/target"
+tag = "rust_target"
 
 [[directory]]
 path = "/home/user/.cache"
+tag = "cache_dir"

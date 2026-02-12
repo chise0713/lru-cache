@@ -10,10 +10,15 @@ pub struct Args {
     #[arg(flag = 'r', help = "output raw data, NUL terminated string slice.")]
     pub raw: bool,
     #[arg(
-        flag = 'd',
-        help = "a directory to calculate evictation, no input equals all."
+        flag = 'p',
+        help = "a directory path to calculate evictation, no input equals all."
     )]
-    pub directory: Option<Box<str>>,
+    pub path: Option<Box<str>>,
+    #[arg(
+        flag = 't',
+        help = "a tag of configured directory tag, behavior same as path"
+    )]
+    pub tag: Option<Box<str>>,
 }
 
 const EXIT_INVALID_ARG: u8 = 2;

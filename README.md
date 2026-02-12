@@ -10,9 +10,11 @@ config example:
 ```toml
 [[directory]]
 path = "/home/user/.cargo/target"
+tag = "rust_target"
 
 [[directory]]
 path = "/home/user/.cache"
+tag = "cache_dir"
 ```
 
 client example:
@@ -34,11 +36,13 @@ Command Summary:
 ```
 client:
 ```console
-usage: lru [-hr] [-s size]
+usage: lru [-hr] [-p path] [-s size] [-t tag]
 Command Summary:
         -h              prints this help message
+        -p              a directory path to calculate evictation, no input equals all.
         -r              output raw data, NUL terminated string slice.
         -s              clean until below the given limit, e.g. 1MiB
+        -t              a tag of configured directory tag, behavior same as path
 ```
 
 ```

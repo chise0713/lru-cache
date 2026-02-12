@@ -5,6 +5,7 @@ use serde::{Deserialize, Deserializer, de};
 #[derive(Debug)]
 pub struct Directory {
     pub path: Box<Path>,
+    pub tag: Box<str>,
 }
 
 impl Deref for Directory {
@@ -29,9 +30,10 @@ impl<'de> Deserialize<'de> for Directory {
         #[derive(Deserialize)]
         struct Raw {
             path: Box<Path>,
+            tag: Box<str>,
         }
 
-        let Raw { path } = Raw::deserialize(deserializer)?;
+        let Raw { path, tag } = Raw::deserialize(deserializer)?;
         if !path.is_absolute() {
             return Err(de::Error::custom(format!(
                 "path `{}` is not an absolute path",
@@ -47,7 +49,7 @@ impl<'de> Deserialize<'de> for Directory {
             )));
         }
 
-        Ok(Directory { path })
+        Ok(Directory { path, tag })
     }
 }
 
