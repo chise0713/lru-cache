@@ -15,7 +15,7 @@ use std::{
 
 use nix::libc::PATH_MAX;
 
-use crate::{NUL, Request, Response, helper::evict_raw_nul_separated};
+use crate::{NUL, Request, Response};
 
 #[must_use]
 pub struct Daemon {
@@ -83,7 +83,7 @@ impl Accepted {
     }
 
     pub fn send_response(mut self, resp: Response) -> Result<()> {
-        self.0.write_all(&evict_raw_nul_separated(&resp))
+        self.0.write_all(resp.as_bytes())
     }
 }
 

@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::Result;
 use byte_unit::Byte;
-use lru_cache::{Request, helper::evict_raw_nul_separated, ipc::Client};
+use lru_cache::{Request, ipc::Client};
 
 use crate::args::{Args, Parse as _};
 
@@ -48,7 +48,7 @@ fn main() -> Result<ExitCode> {
 
     let resp = cl.read_response()?;
     if raw {
-        match io::stdout().write_all(&evict_raw_nul_separated(&resp)) {
+        match io::stdout().write_all(resp.as_bytes()) {
             Ok(()) => {}
             Err(e)
                 if matches!(
