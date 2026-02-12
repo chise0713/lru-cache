@@ -52,9 +52,9 @@ impl PathAtimeSizeMap {
         prefix_filter: Option<&Path>,
     ) -> impl Iterator<Item = &Path> + '_ {
         #[expect(clippy::borrowed_box)]
-        fn map_box_as_ref<'a>(tuple: (&'a Box<Path>, &'a AtimeSize)) -> (&'a Path, &'a AtimeSize) {
-            let path = tuple.0;
-            let atime_size = tuple.1;
+        fn map_box_as_ref<'a>(
+            (path, atime_size): (&'a Box<Path>, &'a AtimeSize),
+        ) -> (&'a Path, &'a AtimeSize) {
             (path.as_ref(), atime_size)
         }
 
