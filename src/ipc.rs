@@ -75,7 +75,7 @@ impl Accepted {
             ));
         }
 
-        let mut buf = unsafe { Box::new_zeroed_slice(path_len as usize).assume_init() };
+        let mut buf = vec![0; path_len as usize].into_boxed_slice();
         self.0.read_exact(&mut buf)?;
         let directory = Path::new(OsStr::from_bytes(&buf));
 

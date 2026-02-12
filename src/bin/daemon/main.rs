@@ -113,10 +113,10 @@ fn main() -> Result<ExitCode> {
 
     eprintln!("enter event loop");
     eprintln!();
-    let mut events =
-        unsafe { Box::new_zeroed_slice([DAEMON_TAG, SIGNAL_TAG, INOTIFY_TAG].len()).assume_init() };
+
+    let mut events = [EpollEvent::empty(); [DAEMON_TAG, SIGNAL_TAG, INOTIFY_TAG].len()];
     'outter: loop {
-        match epfd.wait(&mut events, EpollTimeout::NONE) {
+        match epfd.wait(events.as_mut(), EpollTimeout::NONE) {
             Ok(num) => {
                 for ev in &events[..num] {
                     match ev.data() {
