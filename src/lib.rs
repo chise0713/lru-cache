@@ -2,7 +2,7 @@ pub mod ipc;
 
 use std::{
     ffi::OsStr,
-    io::{self, Error, ErrorKind},
+    io::{Error, ErrorKind, Result},
     os::unix::ffi::OsStrExt as _,
     path::Path,
 };
@@ -44,7 +44,7 @@ pub struct Request {
 }
 
 impl Request {
-    pub fn new(amount: u64, directory: Directory) -> io::Result<Self> {
+    pub fn new(amount: u64, directory: Directory) -> Result<Self> {
         let directory = match directory {
             Directory::Tag(tag) => DirectoryInner::Tag(Box::from(tag)),
             Directory::Path(path) => {
@@ -79,7 +79,7 @@ pub struct Response {
 }
 
 impl Response {
-    pub fn new<I, P>(evict: I) -> Result<Self, io::Error>
+    pub fn new<I, P>(evict: I) -> Result<Self>
     where
         I: IntoIterator<Item = P>,
         P: AsRef<Path>,
