@@ -153,7 +153,7 @@ mod tests {
 
         assert_eq!(resp.as_bytes(), b"/tmp");
 
-        let collected: Vec<_> = resp.evict().collect();
+        let collected: Box<[_]> = resp.evict().collect();
         assert_eq!(collected.len(), 1);
         assert_eq!(collected[0], Path::new("/tmp"));
     }
@@ -164,7 +164,7 @@ mod tests {
 
         assert_eq!(resp.as_bytes(), b"/a\0/b\0/c");
 
-        let collected: Vec<_> = resp.evict().collect();
+        let collected: Box<[_]> = resp.evict().collect();
         assert_eq!(collected.len(), 3);
         assert_eq!(collected[0], Path::new("/a"));
         assert_eq!(collected[1], Path::new("/b"));
@@ -188,8 +188,8 @@ mod tests {
         let paths = ["/var", "/usr/bin", "/home/user"];
         let resp = Response::new(paths).unwrap();
 
-        let roundtrip: Vec<_> = resp.evict().map(|p| p.to_str().unwrap()).collect();
+        let roundtrip: Box<[_]> = resp.evict().map(|p| p.to_str().unwrap()).collect();
 
-        assert_eq!(roundtrip, paths);
+        assert_eq!(roundtrip.as_ref(), paths);
     }
 }

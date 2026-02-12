@@ -60,7 +60,7 @@ impl PathAtimeSizeMap {
 
         (self.total_size > target_size)
             .then(|| {
-                let mut entries: Vec<_> = match prefix_filter {
+                let mut entries: Box<[_]> = match prefix_filter {
                     None => self.map.iter().map(map_box_as_ref).collect(),
                     Some(prefix) => self
                         .map
