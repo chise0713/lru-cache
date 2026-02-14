@@ -15,15 +15,16 @@ pub enum Directory<'a> {
     Path(&'a Path),
 }
 
+#[cfg(test)]
 impl<'a> Directory<'a> {
-    pub fn tag(&self) -> Option<&str> {
+    fn tag(&self) -> Option<&str> {
         match self {
             Self::Tag(tag) => Some(tag),
             Self::Path(_) => None,
         }
     }
 
-    pub fn path(&self) -> Option<&Path> {
+    fn path(&self) -> Option<&Path> {
         match self {
             Self::Tag(_) => None,
             Self::Path(path) => Some(path),
