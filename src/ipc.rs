@@ -83,17 +83,17 @@ impl PackedLen {
 
     #[expect(clippy::len_without_is_empty)]
     #[inline(always)]
-    pub fn len(self) -> u16 {
+    pub const fn len(self) -> u16 {
         self.0 & Self::LEN_MASK
     }
 
     #[inline(always)]
-    pub fn tag(self) -> bool {
+    pub const fn tag(self) -> bool {
         self.0 & Self::FLAG_TAG != 0
     }
 
     #[inline(always)]
-    pub fn as_bytes(self) -> [u8; 2] {
+    pub const fn as_bytes(self) -> [u8; 2] {
         self.0.to_be_bytes()
     }
 }
