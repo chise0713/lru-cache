@@ -1,7 +1,7 @@
 use std::{
     ffi::OsStr,
     fs::{self, Permissions},
-    io::{Error, ErrorKind, IoSlice, Read as _, Result, Write as _},
+    io::{Error, ErrorKind, IoSlice, Read as _, Result, Write},
     os::{
         fd::{AsFd, BorrowedFd},
         unix::{
@@ -170,13 +170,13 @@ impl Client {
         };
         let packed_len_buf = packed_len.as_bytes();
 
-        let io_slice = &[
+        let mut io_slice = [
             IoSlice::new(&amount_buf),
             IoSlice::new(&packed_len_buf),
             IoSlice::new(bytes),
         ];
 
-        _ = stream.write_vectored(io_slice)?;
+        write_all_vectored(&mut stream, &mut io_slice)?;
 
         Ok(Self(stream))
     }
@@ -205,6 +205,28 @@ impl Client {
 
         Response::new(evict)
     }
+}
+
+// FIXME: remove this after `Write::write_all_vectored` stablize
+// https://doc.rust-lang.org/1.93.1/src/std/io/mod.rs.html#1937-1952
+fn write_all_vectored<W: Write>(write: &mut W, mut bufs: &mut [IoSlice<'_>]) -> Result<()> {
+    // Guarantee that bufs is empty if it contains no data,
+    // to avoid calling write_vectored if there is no data to be written.
+    IoSlice::advance_slices(&mut bufs, 0);
+    while !bufs.is_empty() {
+        match write.write_vectored(bufs) {
+            Ok(0) => {
+                return Err(Error::new(
+                    ErrorKind::WriteZero,
+                    "failed to write whole buffer",
+                ));
+            }
+            Ok(n) => IoSlice::advance_slices(&mut bufs, n),
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
