@@ -13,8 +13,6 @@ use std::{
     path::Path,
 };
 
-use nix::libc::PATH_MAX;
-
 use crate::{Directory, NUL, Request, Response};
 
 #[must_use]
@@ -60,14 +58,20 @@ impl AsFd for Daemon {
 pub struct PackedLen(u16);
 
 impl PackedLen {
-    const MAX: usize = PATH_MAX as usize;
+    // https://github.com/torvalds/linux/blob/v6.19/include/uapi/linux/limits.h#L13
+    const PATH_MAX: usize = 4096;
     const FLAG_TAG: u16 = 1 << 15;
     const LEN_MASK: u16 = !Self::FLAG_TAG;
 
-    pub fn new(len: u16, tag: bool) -> Result<Self> {
-        if len & !Self::LEN_MASK != 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, "length too large"));
+    pub fn new(len: usize, tag: bool) -> Result<Self> {
+        if len > Self::PATH_MAX {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "path length exceed `PATH_MAX`",
+            ));
         }
+
+        let len = len as u16;
 
         let mut value = len;
         if tag {
@@ -99,9 +103,9 @@ impl TryFrom<u16> for PackedLen {
 
     fn try_from(value: u16) -> Result<Self> {
         let len = value & Self::LEN_MASK;
-        if len as usize > Self::MAX {
+        if len as usize > Self::PATH_MAX {
             return Err(Error::new(
-                ErrorKind::InvalidData,
+                ErrorKind::InvalidInput,
                 "path length exceed `PATH_MAX`",
             ));
         }
@@ -155,32 +159,17 @@ impl Client {
     pub fn send_request<P: AsRef<Path>>(path: P, req: Request) -> Result<Self> {
         let mut stream = UnixStream::connect(path)?;
 
-        let amount_buf = req.amount().to_be_bytes();
+        let amount_buf: [u8; _] = req.amount().to_be_bytes();
 
         let (packed_len, bytes) = match req.directory() {
-            Directory::Tag(tag) => (
-                PackedLen::new(
-                    tag.len()
-                        .try_into()
-                        .map_err(|e| Error::new(ErrorKind::InvalidInput, e))?,
-                    true,
-                )?,
-                tag.as_bytes(),
-            ),
+            Directory::Tag(tag) => (PackedLen::new(tag.len(), true)?, tag.as_bytes()),
             Directory::Path(path) => (
-                PackedLen::new(
-                    path.as_os_str()
-                        .as_bytes()
-                        .len()
-                        .try_into()
-                        .map_err(|e| Error::new(ErrorKind::InvalidInput, e))?,
-                    false,
-                )?,
+                PackedLen::new(path.as_os_str().as_bytes().len(), false)?,
                 path.as_os_str().as_bytes(),
             ),
         };
-
         let packed_len_buf = packed_len.as_bytes();
+
         let io_slice = &[
             IoSlice::new(&amount_buf),
             IoSlice::new(&packed_len_buf),

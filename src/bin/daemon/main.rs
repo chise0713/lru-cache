@@ -6,7 +6,7 @@ use std::{
     collections::HashMap,
     env, fs,
     hash::BuildHasherDefault,
-    io::{Error, ErrorKind},
+    io::ErrorKind,
     os::{
         fd::AsFd as _,
         unix::{ffi::OsStrExt as _, fs::MetadataExt as _},
@@ -143,11 +143,7 @@ fn main() -> Result<ExitCode> {
             Ok(num) => {
                 for ev in &events[..num] {
                     match ev.data() {
-                        DAEMON_TAG => {
-                            if let Err(e) = handle_daemon(&ln, &map, &tag_table) {
-                                eprintln!("Error: {e}");
-                            }
-                        }
+                        DAEMON_TAG => handle_daemon(&ln, &map, &tag_table)?,
                         SIGNAL_TAG => {
                             while let Ok(Some(_)) = signal_fd.read_signal() {}
                             break 'outter;
@@ -178,10 +174,8 @@ fn handle_daemon(ln: &Daemon, map: &PathAtimeSizeMap, tag_table: &TagTable) -> R
                 Directory::Tag("") => Path::new(""),
                 Directory::Tag(tag) => {
                     let Some(path) = tag_table.get(tag) else {
-                        return Err(Error::new(
-                            ErrorKind::NotFound,
-                            format!("tag: \"{tag}\" not found"),
-                        ))?;
+                        eprintln!("tag: \"{tag}\" not found");
+                        return Ok(());
                     };
                     path
                 }
