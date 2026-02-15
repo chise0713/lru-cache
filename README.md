@@ -29,15 +29,17 @@ usages:
 
 daemon:
 ```console
-usage: lru-daemon [-h] [-c config]
+usage: lru-daemon [-h] [-c config] [-s socket]
 Command Summary:
         -c              config path
         -h              prints this help message
+        -s              socket path
 ```
 client:
 ```console
-usage: lru [-hr] [-p path] [-s size] [-t tag]
+usage: lru [-hr] [-d daemon] [-p path] [-s size] [-t tag]
 Command Summary:
+        -d              daemon socket path
         -h              prints this help message
         -p              a directory path to calculate evictation, no input equals all.
         -r              output raw data, NUL terminated string slice.

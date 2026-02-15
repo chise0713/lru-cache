@@ -56,7 +56,7 @@ impl TagTable {
 }
 
 fn main() -> Result<ExitCode> {
-    let Args { config } = match Args::parse() {
+    let Args { config, socket } = match Args::parse() {
         Ok(v) => v,
         Err(e) => {
             return Ok(e);
@@ -102,12 +102,18 @@ fn main() -> Result<ExitCode> {
     eprintln!("tag-table initialized"); //init
 
     eprintln!("starting daemon.."); // start
-    let socket_path = if let Some(d) = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
-        d
+
+    let socket_path = if let Some(s) = socket {
+        PathBuf::from(s.as_ref())
     } else {
-        PathBuf::from("/run/")
-    }
-    .join("lru-cache.sock");
+        if let Some(d) = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+            d
+        } else {
+            PathBuf::from("/run/")
+        }
+        .join("lru-cache.sock")
+    };
+
     let ln = match Daemon::bind(socket_path) {
         Ok(d) => d,
         Err(e) => bail!("{e}"),

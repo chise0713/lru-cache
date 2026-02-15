@@ -7,6 +7,8 @@ use anyhow::Result;
 pub struct Args {
     #[arg(flag = 'c', help = "config path")]
     pub config: Option<Box<str>>,
+    #[arg(flag = 's', help = "socket path")]
+    pub socket: Option<Box<str>>,
 }
 
 const EXIT_INVALID_ARG: u8 = 2;

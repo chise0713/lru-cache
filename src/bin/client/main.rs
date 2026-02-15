@@ -20,6 +20,7 @@ fn main() -> Result<ExitCode> {
         raw,
         path,
         tag,
+        daemon,
     } = match Args::parse() {
         Ok(v) => v,
         Err(e) => {
@@ -47,12 +48,16 @@ fn main() -> Result<ExitCode> {
 
     let bytes = Byte::from_str(size.as_ref())?.as_u64();
 
-    let socket_path = if let Some(d) = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
-        d
+    let socket_path = if let Some(s) = daemon {
+        PathBuf::from(s.as_ref())
     } else {
-        PathBuf::from("/run/")
-    }
-    .join("lru-cache.sock");
+        if let Some(d) = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+            d
+        } else {
+            PathBuf::from("/run/")
+        }
+        .join("lru-cache.sock")
+    };
 
     let cl = Client::send_request(socket_path, Request::new(bytes, directory)?)?;
 

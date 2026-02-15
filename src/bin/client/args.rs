@@ -19,6 +19,8 @@ pub struct Args {
         help = "a tag of configured directory tag, behavior same as path"
     )]
     pub tag: Option<Box<str>>,
+    #[arg(flag = 'd', help = "daemon socket path")]
+    pub daemon: Option<Box<str>>,
 }
 
 const EXIT_INVALID_ARG: u8 = 2;
