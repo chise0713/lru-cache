@@ -87,22 +87,34 @@ impl Response {
     {
         let mut buf = Vec::new();
 
-        for (i, path) in evict.into_iter().enumerate() {
-            let path = path.as_ref();
+        evict
+            .into_iter()
+            .scan(true, |first, path| {
+                let is_first = *first;
+                *first = false;
+                Some((is_first, path))
+            })
+            .try_for_each(|(is_first, path)| -> Result<()> {
+                let path = path.as_ref();
 
-            if !path.is_absolute() {
-                return Err(Error::new(ErrorKind::InvalidInput, "path is not absolute"));
-            }
-            if path.as_os_str().as_bytes().contains(&NUL) {
-                return Err(Error::new(ErrorKind::InvalidData, "path contains NUL"));
-            }
+                if !path.is_absolute() {
+                    return Err(Error::new(ErrorKind::InvalidInput, "path is not absolute"));
+                }
 
-            if i != 0 {
-                buf.push(b'\0');
-            }
+                let bytes = path.as_os_str().as_bytes();
 
-            buf.extend_from_slice(path.as_os_str().as_bytes());
-        }
+                if bytes.contains(&NUL) {
+                    return Err(Error::new(ErrorKind::InvalidData, "path contains NUL"));
+                }
+
+                if !is_first {
+                    buf.push(b'\0');
+                }
+
+                buf.extend_from_slice(bytes);
+
+                Ok(())
+            })?;
 
         Ok(Self {
             evict: buf.into_boxed_slice(),
