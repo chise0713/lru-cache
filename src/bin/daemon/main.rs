@@ -14,6 +14,10 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
     str::FromStr as _,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -52,6 +56,14 @@ impl TagTable {
             .binary_search_by(|e| e.tag.as_ref().cmp(tag))
             .ok()?;
         Some(self.entries[idx].as_ref())
+    }
+}
+
+struct ActiveGuard<'a>(&'a AtomicBool);
+
+impl Drop for ActiveGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -143,13 +155,15 @@ fn main() -> Result<ExitCode> {
     eprintln!("enter event loop");
     eprintln!();
 
+    let active = Arc::new(AtomicBool::new(false));
+
     let mut events = [EpollEvent::empty(); [DAEMON_TAG, SIGNAL_TAG, INOTIFY_TAG].len()];
     'outter: loop {
         match epfd.wait(events.as_mut(), EpollTimeout::NONE) {
             Ok(num) => {
                 for ev in &events[..num] {
                     match ev.data() {
-                        DAEMON_TAG => handle_daemon(&ln, &map, &tag_table)?,
+                        DAEMON_TAG => handle_daemon(&ln, &map, &tag_table, active.clone())?,
                         SIGNAL_TAG => {
                             while let Ok(Some(_)) = signal_fd.read_signal() {}
                             break 'outter;
@@ -168,37 +182,57 @@ fn main() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn handle_daemon(ln: &Daemon, map: &PathAtimeSizeMap, tag_table: &TagTable) -> Result<()> {
-    match ln.accept() {
-        Ok(mut accepted) => {
-            eprintln!("\naccepted client\n");
-            let req = accepted.read_request()?;
-            let size = req.amount();
-            eprintln!("client requested size: {size}\n");
-            let directory = req.directory();
-            let path = match directory {
-                Directory::Tag("") => Path::new(""),
-                Directory::Tag(tag) => {
-                    let Some(path) = tag_table.get(tag) else {
-                        eprintln!("tag: \"{tag}\" not found");
-                        return Ok(());
-                    };
-                    path
+fn handle_daemon(
+    ln: &Daemon,
+    map: &PathAtimeSizeMap,
+    tag_table: &TagTable,
+    active: Arc<AtomicBool>,
+) -> Result<()> {
+    let (mut accepted, _guard) = loop {
+        match ln.accept() {
+            Ok(v) => {
+                if active
+                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    break (v, ActiveGuard(&active));
+                } else {
+                    return Ok(());
                 }
-                Directory::Path(path) => path,
+            }
+            Err(e) if matches!(e.kind(), ErrorKind::Interrupted) => continue,
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock) => return Ok(()),
+            Err(e) => return Err(e)?,
+        }
+    };
+
+    eprintln!("\naccepted client\n");
+
+    let req = accepted.read_request()?;
+    let size = req.amount();
+    eprintln!("client requested size: {size}\n");
+
+    let directory = req.directory();
+    let path = match directory {
+        Directory::Tag("") => Path::new(""),
+        Directory::Tag(tag) => {
+            let Some(path) = tag_table.get(tag) else {
+                eprintln!("tag: \"{tag}\" not found");
+                return Ok(());
             };
-            let path_bytes_is_empty = path.as_os_str().as_bytes().is_empty();
-            let prefix_filter = (!path_bytes_is_empty).then_some(path);
-            let evict = map.plan_evict_until(size, prefix_filter);
-            let resp = Response::new(evict)?;
-            accepted.send_response(resp)?;
-            eprintln!("responsed to client\n");
+            path
         }
-        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
-        Err(e) => {
-            Err(e)?;
-        }
-    }
+        Directory::Path(path) => path,
+    };
+
+    let path_bytes_is_empty = path.as_os_str().as_bytes().is_empty();
+    let prefix_filter = (!path_bytes_is_empty).then_some(path);
+
+    let evict = map.plan_evict_until(size, prefix_filter);
+    let resp = Response::new(evict)?;
+    accepted.send_response(resp)?;
+
+    eprintln!("responsed to client\n");
 
     Ok(())
 }
@@ -244,8 +278,11 @@ fn events_watch(
     loop {
         let events = match inotify.read_events(&mut buffer) {
             Ok(e) => e,
-            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock) => {
                 break;
+            }
+            Err(e) if matches!(e.kind(), ErrorKind::Interrupted) => {
+                continue;
             }
             Err(e) => panic!("failed to read inotify events: {}", e),
         };

@@ -70,9 +70,7 @@ impl PathAtimeSizeMap {
                         .collect(),
                 };
 
-                entries.sort_by(|(path_a, atime_size_a), (path_b, atime_size_b)| {
-                    atime_size_a.cmp(atime_size_b).then(path_a.cmp(path_b))
-                });
+                entries.sort_unstable_by_key(|(path, atime_size)| (*atime_size, *path));
 
                 let cutoff = entries
                     .iter()

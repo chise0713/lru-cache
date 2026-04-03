@@ -11,6 +11,7 @@ use std::{
         },
     },
     path::Path,
+    time::Duration,
 };
 
 use crate::{Directory, NUL, Request, Response};
@@ -33,7 +34,11 @@ impl Daemon {
     }
 
     pub fn accept(&self) -> Result<Accepted> {
-        Ok(Accepted(self.ln.accept()?.0))
+        let stream = self.ln.accept()?.0;
+        let timeout = Some(Duration::from_secs(5));
+        stream.set_read_timeout(timeout)?;
+        stream.set_write_timeout(timeout)?;
+        Ok(Accepted(stream))
     }
 
     pub fn set_nonblocking(&self, nonblocking: bool) -> Result<()> {
