@@ -53,8 +53,28 @@ impl<'de> Deserialize<'de> for Directory {
     }
 }
 
+fn deserialize_abs_paths<'de, D>(deserializer: D) -> Result<Box<[Box<Path>]>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let paths: Box<[Box<Path>]> = Box::deserialize(deserializer)?;
+
+    for path in paths.iter() {
+        if !path.is_absolute() {
+            return Err(de::Error::custom(format!(
+                "path `{}` is not an absolute path",
+                path.display()
+            )));
+        }
+    }
+
+    Ok(paths)
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
+    #[serde(deserialize_with = "deserialize_abs_paths")]
+    pub exclude: Box<[Box<Path>]>,
     pub directory: Box<[Directory]>,
 }
 

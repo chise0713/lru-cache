@@ -3,6 +3,7 @@ mod config;
 mod map;
 
 use std::{
+    cmp::Reverse,
     collections::HashMap,
     env, fs,
     hash::BuildHasherDefault,
@@ -46,7 +47,7 @@ struct TagTable {
 
 impl TagTable {
     fn new(mut entries: Box<[config::Directory]>) -> Self {
-        entries.sort_by(|a, b| a.tag.cmp(&b.tag));
+        entries.sort_unstable_by(|a, b| a.tag.cmp(&b.tag));
         Self { entries }
     }
 
@@ -64,6 +65,35 @@ struct ActiveGuard<'a>(&'a AtomicBool);
 impl Drop for ActiveGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
+    }
+}
+
+struct ExcludeSet {
+    paths: Box<[(Box<Path>, usize)]>,
+}
+
+impl ExcludeSet {
+    fn new(paths: Box<[Box<Path>]>) -> Self {
+        let mut paths: Box<[_]> = paths
+            .into_iter()
+            .map(|path| {
+                let count = path.components().count();
+                (path, count)
+            })
+            .collect();
+        paths.sort_unstable_by_key(|(_, count)| Reverse(*count));
+        Self { paths }
+    }
+
+    #[inline]
+    fn contains<P: AsRef<Path>>(&self, path: P) -> bool {
+        let path = path.as_ref();
+
+        let path_len = path.components().count();
+
+        self.paths
+            .iter()
+            .any(|(e, e_len)| *e_len <= path_len && path.starts_with(e))
     }
 }
 
@@ -90,6 +120,8 @@ fn main() -> Result<ExitCode> {
 
     let mut map = PathAtimeSizeMap::new();
 
+    let exclude_set = ExcludeSet::new(config.exclude);
+
     for dir in &config.directory {
         let walkdir = WalkDir::new(dir)
             .follow_root_links(false)
@@ -97,6 +129,9 @@ fn main() -> Result<ExitCode> {
             .filter_map(Result::ok);
         for entry in walkdir {
             let path = entry.path();
+            if exclude_set.contains(path) {
+                continue;
+            }
             let meta = entry.metadata()?;
             if meta.is_dir() {
                 add_watch(&mut wd_map, &mut watches, path);
@@ -168,7 +203,9 @@ fn main() -> Result<ExitCode> {
                             while let Ok(Some(_)) = signal_fd.read_signal() {}
                             break 'outter;
                         }
-                        INOTIFY_TAG => events_watch(&mut inotify, &mut wd_map, &mut map),
+                        INOTIFY_TAG => {
+                            events_watch(&mut inotify, &mut wd_map, &mut map, &exclude_set)
+                        }
                         _ => unreachable!(),
                     }
                 }
@@ -271,6 +308,7 @@ fn events_watch(
     inotify: &mut Inotify,
     wd_map: &mut XxHashMap<WatchDescriptor, Box<Path>>,
     map: &mut PathAtimeSizeMap,
+    exclude_set: &ExcludeSet,
 ) {
     use inotify::EventMask as E;
 
@@ -314,6 +352,10 @@ fn events_watch(
                 .name
                 .map(|n| base.join(n).into_boxed_path())
                 .unwrap_or_else(|| base.clone());
+
+            if exclude_set.contains(&full) {
+                continue;
+            }
 
             if is_dir && create {
                 add_watch(wd_map, &mut inotify.watches(), &full);
@@ -365,5 +407,79 @@ mod tests {
         assert_eq!(table.get("alpha"), Some(Path::new("/a")));
         assert_eq!(table.get("beta"), Some(Path::new("/b")));
         assert_eq!(table.get("not-exist"), None);
+    }
+
+    fn exclude_set_make<P: AsRef<Path>>(paths: &[P]) -> ExcludeSet {
+        ExcludeSet::new(paths.iter().map(|p| Box::from(p.as_ref())).collect())
+    }
+
+    #[test]
+    fn exclude_set_exact_match() {
+        let ex = exclude_set_make(&["/tmp"]);
+
+        assert!(ex.contains(Path::new("/tmp")));
+    }
+
+    #[test]
+    fn exclude_set_subpath_match() {
+        let ex = exclude_set_make(&["/tmp"]);
+
+        assert!(ex.contains(Path::new("/tmp/a")));
+        assert!(ex.contains(Path::new("/tmp/a/b")));
+    }
+
+    #[test]
+    fn exclude_set_non_match() {
+        let ex = exclude_set_make(&["/tmp"]);
+
+        assert!(!ex.contains(Path::new("/var")));
+        assert!(!ex.contains(Path::new("/tmp2")));
+    }
+
+    #[test]
+    fn exclude_set_component_boundary() {
+        let ex = exclude_set_make(&["/tmp"]);
+
+        assert!(!ex.contains(Path::new("/tmp2")));
+        assert!(!ex.contains(Path::new("/tmpfile")));
+    }
+
+    #[test]
+    fn exclude_set_multiple_rules() {
+        let ex = exclude_set_make(&["/tmp", "/var/log"]);
+
+        assert!(ex.contains(Path::new("/tmp/a")));
+        assert!(ex.contains(Path::new("/var/log/nginx")));
+        assert!(!ex.contains(Path::new("/var/tmp")));
+    }
+
+    #[test]
+    fn exclude_set_overlapping_prefix() {
+        let ex = exclude_set_make(&["/a", "/a/b"]);
+
+        assert!(ex.contains(Path::new("/a/b/c")));
+        assert!(ex.contains(Path::new("/a/x")));
+    }
+
+    #[test]
+    fn exclude_set_empty_exclude() {
+        let ex = exclude_set_make(&[] as &[&Path; 0]);
+
+        assert!(!ex.contains(Path::new("/anything")));
+    }
+
+    #[test]
+    fn exclude_set_root_exclude() {
+        let ex = exclude_set_make(&["/"]);
+
+        assert!(ex.contains(Path::new("/a")));
+        assert!(ex.contains(Path::new("/")));
+    }
+
+    #[test]
+    fn exclude_set_nested_non_match() {
+        let ex = exclude_set_make(&["/a/b"]);
+
+        assert!(!ex.contains(Path::new("/a")));
     }
 }
