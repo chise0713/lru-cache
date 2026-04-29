@@ -1,3 +1,5 @@
+exclude = ["/home/user/.cache/paru"]
+
 [[directory]]
 path = "/home/user/.cargo/target"
 tag = "rust_target"

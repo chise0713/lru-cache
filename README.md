@@ -8,6 +8,8 @@ lru-cache
 
 config example:
 ```toml
+exclude = ["/home/user/.cache/paru"]
+
 [[directory]]
 path = "/home/user/.cargo/target"
 tag = "rust_target"
