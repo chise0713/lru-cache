@@ -33,11 +33,7 @@ use nix::sys::{
 use twox_hash::XxHash3_64;
 use walkdir::WalkDir;
 
-use crate::{
-    args::{Args, Parse as _},
-    config::Config,
-    map::PathAtimeSizeMap,
-};
+use crate::{args::Args, config::Config, map::PathAtimeSizeMap};
 
 type XxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<XxHash3_64>>;
 

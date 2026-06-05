@@ -12,7 +12,7 @@ use anyhow::{Result, bail};
 use byte_unit::Byte;
 use lru_cache::{Directory, Request, ipc::Client};
 
-use crate::args::{Args, Parse as _};
+use crate::args::Args;
 
 fn main() -> Result<ExitCode> {
     let Args {
