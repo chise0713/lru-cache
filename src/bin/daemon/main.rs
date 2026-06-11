@@ -326,7 +326,6 @@ fn events_watch(
             .unwrap()
             .as_secs() as i64;
         for event in events {
-            let is_dir = event.mask.contains(E::ISDIR);
             let ignored = event.mask.contains(E::IGNORED);
             let create = event.mask.intersects(E::CREATE | E::MOVED_TO);
             let modify = event
@@ -353,8 +352,28 @@ fn events_watch(
                 continue;
             }
 
-            if is_dir && create {
-                add_watch(wd_map, &mut inotify.watches(), &full);
+            if delete {
+                eprintln!("\"{}\" removed, updating key-value map", full.display());
+                map.remove(&full);
+            }
+
+            let meta = match full.metadata() {
+                Ok(m) => m,
+                Err(e) if e.kind() == ErrorKind::NotFound => {
+                    eprintln!("metadata error ({}): {}", e.kind(), e);
+                    map.remove(&full);
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("metadata error (ignored): {}", e);
+                    continue;
+                }
+            };
+
+            if meta.is_dir() {
+                if create {
+                    add_watch(wd_map, &mut inotify.watches(), &full);
+                }
                 continue;
             }
 
@@ -366,15 +385,8 @@ fn events_watch(
                 eprintln!("\"{}\" modified, updating key-value map", full.display());
             }
 
-            if (create || modify)
-                && let Ok(meta) = full.metadata()
-            {
+            if create || modify {
                 map.insert(&full, now, meta.size());
-            }
-
-            if delete {
-                eprintln!("\"{}\" removed, updating key-value map", full.display());
-                map.remove(&full);
             }
         }
     }
