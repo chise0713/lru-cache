@@ -3,7 +3,6 @@ mod config;
 mod map;
 
 use std::{
-    cmp::Reverse,
     collections::HashMap,
     env, fs,
     hash::BuildHasherDefault,
@@ -65,19 +64,11 @@ impl Drop for ActiveGuard<'_> {
 }
 
 struct ExcludeSet {
-    paths: Box<[(Box<Path>, usize)]>,
+    paths: Box<[Box<Path>]>,
 }
 
 impl ExcludeSet {
     fn new(paths: Box<[Box<Path>]>) -> Self {
-        let mut paths: Box<[_]> = paths
-            .into_iter()
-            .map(|path| {
-                let count = path.components().count();
-                (path, count)
-            })
-            .collect();
-        paths.sort_unstable_by_key(|(_, count)| Reverse(*count));
         Self { paths }
     }
 
@@ -85,11 +76,7 @@ impl ExcludeSet {
     fn contains<P: AsRef<Path>>(&self, path: P) -> bool {
         let path = path.as_ref();
 
-        let path_len = path.components().count();
-
-        self.paths
-            .iter()
-            .any(|(e, e_len)| *e_len <= path_len && path.starts_with(e))
+        self.paths.iter().any(|e| path.starts_with(e))
     }
 }
 
@@ -146,16 +133,14 @@ fn main() -> Result<ExitCode> {
 
     eprintln!("starting daemon.."); // start
 
-    let socket_path = if let Some(s) = socket {
-        PathBuf::from(s.as_ref())
-    } else {
-        if let Some(d) = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
-            d
-        } else {
-            PathBuf::from("/run/")
-        }
-        .join("lru-cache.sock")
-    };
+    let socket_path = socket
+        .map(|s| PathBuf::from(s.as_ref()))
+        .unwrap_or_else(|| {
+            env::var_os("XDG_RUNTIME_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/run"))
+                .join("lru-cache.sock")
+        });
 
     let ln = match Daemon::bind(socket_path) {
         Ok(d) => d,
