@@ -65,11 +65,7 @@ fn main() -> Result<ExitCode> {
     if raw {
         match io::stdout().write_all(resp.as_bytes()) {
             Ok(()) => {}
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::Interrupted | io::ErrorKind::BrokenPipe
-                ) => {}
+            Err(e) if matches!(e.kind(), io::ErrorKind::BrokenPipe) => {}
             Err(e) => return Err(e)?,
         };
     } else {
